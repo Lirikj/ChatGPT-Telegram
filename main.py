@@ -1,5 +1,7 @@
 import time 
 import requests
+import sqlite3
+import threading
 from telebot import types
 from config import bot 
 from chatGPT import chat_with_gpt
@@ -13,16 +15,15 @@ def menu(message):
     first_name = message.from_user.first_name 
     last_name = message.from_user.last_name if message.from_user.last_name else ''
     add_user(user_id, username, first_name, last_name)
-    bot.send_message(message.chat.id, f'Привет, {first_name} {last_name} \n'
-                    '\nЯ нейросеть EurekaGPT, чем могу помочь?') 
+    bot.send_message(message.chat.id, f'👋Привет, {first_name} {last_name} \n'
+                    '\nЯ нейросеть 🤖EurekaGPT, чем могу помочь?') 
 
 
 @bot.message_handler(commands=['info']) 
 def info(message): 
-    bot.send_message(message.chat.id, 'EurekaGPT 1.3 \n'
+    bot.send_message(message.chat.id, 'EurekaGPT 1.5 \n'
                     '\n🧑🏼‍💻developer - @abamma'
-                    '\n🤖Бот использует нейросеть deepseek R1 для общения с пользователем')  
-
+                    '\n🤖Бот использует нейросеть ChatGPT от OpenAI для общения с пользователем')  
 
 @bot.message_handler(commands=['admin']) 
 def admin(message):
@@ -58,15 +59,27 @@ def gpt_response(message):
         last_name = message.from_user.last_name if message.from_user.last_name else ''
         add_user(user_id, username, first_name, last_name)
 
-        bot.send_chat_action(message.chat.id, 'typing')  
+        stop_event = threading.Event()
+
+        def send_typing():
+            while not stop_event.is_set():
+                bot.send_chat_action(message.chat.id, 'typing')
+                time.sleep(3)
+
+        typing_thread = threading.Thread(target=send_typing)
+        typing_thread.start()
+
         text = message.text
         response = chat_with_gpt(user_id, text)
 
+        stop_event.set()
+        typing_thread.join()
+
         max_length = 4096
-        if len(text) <= max_length:
+        if len(response) <= max_length:
             bot.send_message(message.chat.id, response, parse_mode='HTML')
         else:
-            for i in range(0, len(text), max_length):
+            for i in range(0, len(response), max_length):
                 bot.send_message(message.chat.id, response[i:i+max_length], parse_mode='HTML')
 
     except Exception as e:
@@ -74,10 +87,44 @@ def gpt_response(message):
         print(f"Ошибка в gpt_response: {e}")
 
 
+@bot.inline_handler(func=lambda query: True)
+def query_text(inline_query):
+    try:
+        query = inline_query.query.strip()
+        if not query:
+            return
+
+        user = inline_query.from_user
+        add_user(
+            user.id,
+            user.username or '',
+            user.first_name or '',
+            user.last_name or ''
+        )
+
+        response = chat_with_gpt(user.id, query)
+
+        result = types.InlineQueryResultArticle(
+            id='eureka1',
+            title='EurekaGPT ответ',
+            input_message_content=types.InputTextMessageContent(
+                response,
+                parse_mode='HTML'
+            )
+        )
+        bot.answer_inline_query(
+            inline_query.id,
+            results=[result],
+            cache_time=1
+        )
+    except Exception as e:
+        print(f"Ошибка в query_text: {e}")
+        bot.answer_inline_query(inline_query.id, results=[]) 
+
+
 @bot.callback_query_handler(func=lambda call: call.data == 'users')
 def users(callback):
     try:
-        import sqlite3
         conn = sqlite3.connect('chat_database.db')
         c = conn.cursor()
         c.execute("SELECT user_id, first_name, last_name, username FROM users")
